@@ -1,2 +1,13 @@
 scratch.pse
 *.scratch
+
+# Raw design outputs (bulky - kept locally, not committed)
+batchA/
+batchB/
+batchA.zip
+batchB.zip
+
+# Python / env cruft
+__pycache__/
+*.pyc
+.DS_Store

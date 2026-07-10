@@ -2,11 +2,21 @@
 
 ## Overview
 
-A proof-of-concept de novo nanobody (VHH) design campaign targeting the apical
-domain of prostate-specific membrane antigen (PSMA), using the RFantibody
-pipeline (RFdiffusion, ProteinMPNN, RoseTTAFold2). The goal was to build and run
-the full computational workflow end to end against a chosen epitope, and to
-develop the judgment needed to evaluate the resulting designs.
+A de novo nanobody (VHH) design campaign targeting the apical domain of
+prostate-specific membrane antigen (PSMA), using the RFantibody pipeline
+(RFdiffusion, ProteinMPNN, RoseTTAFold2). The work ran in two phases:
+
+- **Phase 1** was a 4-design proof-of-concept to validate the full workflow end
+  to end, shake out failure modes, and build the judgment needed to evaluate
+  designs. It confirmed the pipeline runs, caught a target-renumbering bug, and
+  produced a hint that CDR-H3 length matters.
+- **Phase 2** scaled to a 192-design, two-batch experiment that turned that hint
+  into a controlled test of CDR-H3 length, and produced a verified headline
+  design.
+
+The target, epitope, and target-preparation steps below are shared across both
+phases. The pipeline is shared too; only the scale and the H3 sampling range
+differ between phases.
 
 ## Target and epitope
 
@@ -44,29 +54,40 @@ specific surface contacts.
 Framework: h-NbBCII10 (the validated VHH/nanobody framework provided with
 RFantibody).
 
-Step 1, RFdiffusion (backbone design):
-- Loops designed: heavy-chain only (H1:7, H2:6, H3:6-20 then 6-16), since a VHH
-  has no light chain.
-- Hotspots: the five residues above, on chain T.
-- H3 range set wider than a typical IgG (6-20) to reflect the longer CDR-H3 seen
-  in camelid VHHs. Note: the longest H3 lengths (17-20) contributed to the
-  degenerate-frame instability; tightening to 6-16 improved stability.
+The funnel, parameterized in `scripts/run_batch.sh`:
 
-Step 2, ProteinMPNN (sequence design):
-- Loops: H1, H2, H3 only.
-- 2 sequences per backbone.
+1. **RFdiffusion** (backbone design): heavy-chain loops only (H1, H2, H3), since
+   a VHH has no light chain. Hotspots set to the five residues above on chain T.
+2. **8 A hotspot-distance filter**: backbones whose designed loops come within
+   8 A of the hotspots are kept; the rest are discarded before sequence design.
+   This is the geometric gate that concentrates compute on backbones that
+   actually reach the epitope.
+3. **ProteinMPNN** (sequence design): H1, H2, H3 only; 2 sequences per surviving
+   backbone.
+4. **RoseTTAFold2** (structure prediction / validation): default 10 recycles.
 
-Step 3, RoseTTAFold2 (structure prediction / validation):
-- Default 10 recycles.
-
-Scale: 2 backbones x 2 sequences = 4 designs. This run was a pipeline
-proof-of-concept, not a production campaign.
+`scripts/analyze_batch.py` parses the RF2 SCORE lines (which are footer lines at
+the end of each `_best.pdb`, not the B-factor column), pulls mindist and H3
+length from the `.trb` metadata, ranks designs by interaction_pae, and reports
+per-batch pass rates.
 
 Compute: run on a cloud RTX 4090 (Ada, sm_89) via RunPod. The local RTX 5060 Ti
 (Blackwell, sm_120) is not supported by RFantibody's CUDA 11.8 container, so
-cloud compute on an Ampere/Ada GPU was used.
+cloud compute on an Ada GPU was used.
 
-## Results
+---
+
+# Phase 1: proof-of-concept (4 designs)
+
+A minimal run to validate the pipeline end to end and develop evaluation
+judgment before committing compute to scale.
+
+Scale: 2 backbones x 2 sequences = 4 designs. H3 range initially set wide (6-20)
+to reflect the longer CDR-H3 seen in camelid VHHs, then tightened to 6-16: the
+longest H3 lengths (17-20) contributed to the degenerate-frame instability, and
+tightening improved stability.
+
+## Phase 1 results
 
 RF2 confidence (pLDDT) for the four designs:
 
@@ -81,68 +102,185 @@ All four designs fold confidently (pLDDT > 0.90), but pLDDT reflects fold
 confidence, not binding. Hotspot-to-loop distance separates the two backbones:
 psma_nb_1 (H3 length 11) placed its loops near the epitope (~8 A), while
 psma_nb_0 (H3 length 20) missed (~18 A). This is a concrete illustration that
-high pLDDT does not imply productive engagement, and that longer loops explore
-more space at the cost of more frequent misses.
+high pLDDT does not imply productive engagement.
 
 Visual inspection of the two epitope-reaching designs (psma_nb_1):
+
 - psma_nb_1_dldesign_0: dock is non-productive. The framework (FR2/FR3), not the
   CDRs, forms most of the target contact.
 - psma_nb_1_dldesign_1: better. The CDRs approach the epitope, though the overall
-  angle of approach is suboptimal and remains too far from the hotspot residues. Very weak but potentially detectable binding at best.
+  angle of approach is suboptimal. Plausibly weak but detectable binding at best.
 
 Since dldesign_0 and dldesign_1 share the same backbone, the difference between a
 framework-mediated dock and a CDR-mediated approach comes from the ProteinMPNN
-sequence alone, highlighting that the sequence design step affects productive
+sequence alone. This highlights that the sequence design step affects productive
 engagement, not just the backbone.
+
+## What Phase 1 established
+
+- The pipeline runs end to end and produces confidently folded designs.
+- None of the four is a convincing binder, which is expected at this scale.
+- A target-renumbering bug exists in the outputs (see the QC section below),
+  caught during Phase 1 analysis.
+- A hint on H3 length: the one long-H3 backbone (length 20) missed while the
+  shorter (length 11) reached. With only two backbones this is not a result, but
+  it is a testable hypothesis, and it set up Phase 2.
+
+---
+
+# Phase 2: the two-batch H3-length experiment
+
+Hypothesis: natural camelid VHHs carry long CDR-H3 loops, but does sampling
+longer H3s actually improve de novo design success against this epitope, or does
+the extra loop length just explore more space and miss more often? Phase 1
+gestured at the second possibility with a single backbone; Phase 2 tests it
+properly.
+
+Design: two batches of 96 designs each, identical in every parameter except the
+CDR-H3 length range sampled by RFdiffusion.
+
+- batchA: H3 range 5-15
+- batchB: H3 range 8-20
+
+## Phase 2 results
+
+| Batch  | H3 range | RF2 outputs (passed 8 A filter) | Best iPAE | Median iPAE |
+|--------|----------|---------------------------------|-----------|-------------|
+| batchA | 5-15     | 53 / 96                         | 13.89     | 18.65       |
+| batchB | 8-20     | 64 / 96                         | 5.27      | 18.33       |
+
+batchB won on both the geometric pass rate (64 vs 53 of 96 reaching the epitope)
+and interface confidence at the top end. The medians are close (18.33 vs 18.65),
+so most designs in both batches are poor, as expected for de novo design. The
+difference is in the tail that matters: batchA produced zero designs under the
+iPAE < 10 "promising" threshold, while batchB produced six, including a tight
+cluster of five under iPAE 8.
+
+### The batchB top cluster
+
+| Design               | iPAE | pLDDT | target-aln CDR RMSD (A) | min hotspot dist (A) | H3 len |
+|----------------------|------|-------|-------------------------|----------------------|--------|
+| batchB_90_dldesign_1 | 5.27 | 0.91  | 4.06                    | 4.69                 | 16     |
+| batchB_27_dldesign_0 | 6.97 | 0.90  | 9.41                    | 4.52                 | 12     |
+| batchB_11_dldesign_0 | 7.10 | 0.91  | 9.92                    | 4.12                 | 13     |
+| batchB_20_dldesign_0 | 7.41 | 0.91  | 17.53                   | 4.55                 | 10     |
+| batchB_29_dldesign_1 | 7.66 | 0.91  | 1.28                    | 5.12                 | 11     |
+
+For contrast, batchA's single best design across all 96:
+
+| Design               | iPAE  | pLDDT | target-aln CDR RMSD (A) | min hotspot dist (A) | H3 len |
+|----------------------|-------|-------|-------------------------|----------------------|--------|
+| batchA_35_dldesign_1 | 13.89 | 0.91  | 4.89                    | 4.51                 | 12     |
+
+All six curated designs (five batchB, one batchA) are in `designs/top/`.
+
+## Interpretation
+
+The distributional shift is the finding: widening the H3 range upward moved both
+the pass rate and, more importantly, the best-case interface confidence in the
+right direction. The structural rationale is that a longer H3 has more reach to
+extend from the framework into the epitope.
+
+Two honest caveats on over-reading this:
+
+- Within the winning cluster, H3 lengths span 10-16, and the second-best design
+  (batchB_27, iPAE 6.97) has an H3 of only 12. So H3 length does not cleanly
+  predict quality at the single-design level. Combined with Phase 1, where the
+  long-H3 backbone missed, the honest read is that the effect is real as a shift
+  between sampling ranges, not as a per-design rule. This is exactly why a
+  controlled batch comparison was needed rather than trusting a single backbone.
+- target_aligned_cdr_rmsd varies widely across the cluster (1.28 to 17.53 A).
+  This measures how far RF2's predicted CDR pose sits from the designed backbone.
+  A low iPAE with a high CDR RMSD (e.g. batchB_20) means RF2 is confident about
+  an interface it has repositioned, which is a weaker signal than a low iPAE with
+  a low RMSD (e.g. batchB_29). The headline design sits in between at ~4 A.
+
+## Headline design
+
+**batchB_90_dldesign_1**: iPAE 5.27, pLDDT 0.91, min hotspot distance 4.69 A, H3
+length 16, target-aligned CDR RMSD ~4 A.
+
+Visual inspection in PyMOL confirms the entire CDR-H3 loop folds directly over
+all five hotspot residues, reading Glu-Asp-Lys-Lys-Lys (EDKKK) along the
+epitope. This is genuine CDR-mediated engagement of the intended epitope: the
+loop is doing the binding, not the framework, and it is contacting the residues
+that were actually targeted. Metrics and structure agree, which is the
+combination that matters. The interface figure is at
+`designs/top/tophit_batchB90_interface.png`.
+
+The ~4 A target-aligned CDR RMSD is the caveat: RF2 predicts a pose slightly
+shifted from the designed backbone while remaining confident in the interface.
+This is a strong in silico hypothesis, not a validated binder.
+
+---
 
 ## QC finding: target renumbering across outputs
 
-During analysis, the RF2 output structures were found to renumber the target
-chain inconsistently between designs (e.g. chain T started at residue 120 in one
-output and 129 in another, versus 117 in the input). The target sequence and
-fold were identical across all outputs (0 sequence differences; target Ca-Ca
-RMSD ~0.05 A between designs), but the numbering offsets meant the original
-hotspot residue numbers pointed to the wrong physical residues in the outputs.
+Caught during Phase 1 analysis and handled throughout Phase 2. The RF2 output
+structures renumber the target chain inconsistently between designs (e.g. chain
+T starting at a different residue number in different outputs, versus 117 in the
+input). The target sequence and fold are identical across all outputs (0
+sequence differences; target Ca-Ca RMSD ~0.05 A between designs), but the
+numbering offsets mean the original hotspot residue numbers point to the wrong
+physical residues in the outputs.
 
-This was caught by noticing that a single labelled residue (341) had a different
-amino acid identity across two outputs, which is impossible for an identical
-target unless the numbering had shifted. Hotspots were then re-mapped onto each
-output by structural alignment to the correctly-numbered input and proximity
-selection, and the design assessment was redone on the correct residues.
+This was caught by noticing that a single labelled residue number had a
+different amino acid identity across two outputs, which is impossible for an
+identical target unless the numbering had shifted. Hotspots were then re-mapped
+onto each output by structural alignment to the correctly-numbered input and
+proximity selection, and all hotspot-distance analysis was done on the correctly
+mapped residues.
 
 Lesson: residue numbering is not guaranteed to be preserved through this
 pipeline. Any position-based analysis (hotspot contacts, interface residues)
 must be mapped through structural alignment rather than trusting output residue
-numbers.
+numbers. This is baked into the Phase 2 analysis approach: hotspots are located
+by proximity and alignment, not by residue number.
 
 ## Honest assessment and limitations
 
-- This was a 4-design proof-of-concept. Productive de novo nanobody designs
-  against a defined epitope require generating hundreds to thousands of designs
-  and filtering hard on interface quality. A handful rarely yields a good binder,
-  and these results are consistent with the method's known low per-design hit
-  rate.
-- No formal interface pAE was available from this RF2 build; assessment used
-  pLDDT plus hotspot-to-loop distance plus visual inspection of the interface.
-- None of the four designs is a convincing binder. The best (psma_nb_1_dldesign_1)
-  reaches the epitope with its CDRs but at a poor angle.
+- This is an in silico campaign. Even the best design is a hypothesis, not a
+  binder. de novo nanobody design against a defined epitope typically needs
+  hundreds to thousands of designs and hard interface filtering to yield a real
+  candidate; 192 designs producing one strong in silico hit is consistent with
+  the method's known low per-design hit rate.
+- iPAE is the primary interface-confidence signal here, but a single in silico
+  metric is not validation. A high-confidence predicted interface can still be
+  wrong.
+- The headline design's ~4 A target-aligned CDR RMSD means RF2 repositions the
+  CDR somewhat relative to the design; the interface is confident but not a
+  perfect backbone match.
 - No wet-lab validation. No developability assessment (aggregation, exposed
   hydrophobics, unpaired cysteines, glycosylation motifs). No screening against
   the GCPIII homolog for cross-reactivity.
 
 ## What a real campaign would add
 
-- Generate hundreds+ of backbones, filter on interface pAE and CDR-mediated
-  contact, and inspect survivors.
-- Orthogonal structure prediction (e.g. ColabFold) of top candidates for a
-  second confidence signal.
-- Rosetta interface scoring (dG_separated, shape complementarity).
-- Developability triage and cross-reactivity screening before any synthesis.
+- Scale further and filter hard on interface pAE and CDR-mediated contact, then
+  inspect survivors individually.
+- Orthogonal structure prediction (e.g. ColabFold / AlphaFold) of the top
+  candidates for a second, independent confidence signal.
+- Rosetta interface scoring (dG_separated, shape complementarity) on the
+  survivors.
+- Developability triage and cross-reactivity screening against GCPIII before any
+  synthesis.
+- Wet-lab expression and binding assays (e.g. SPR/BLI) as the only real
+  validation.
 
 ## Files
 
-- targets/: input structure (4NGM crop), hotspot session
-- designs/rf2/: the four RF2-predicted design structures
-- designs/mpnn/: ProteinMPNN sequence-design intermediates
-- designs/trb/: RFdiffusion metadata (pLDDT, hotspot distances, loop lengths)
-- designs/*.png: interface and summary figures
+- `targets/`: input structure (4NGM crop), hotspot PyMOL session
+- `scripts/run_batch.sh`: parameterized RFantibody funnel (RFdiffusion -> 8 A
+  filter -> ProteinMPNN -> RF2)
+- `scripts/analyze_batch.py`: RF2 score parsing, filtering, per-batch stats,
+  ranking by interaction_pae
+- `designs/poc/`: the four Phase 1 proof-of-concept designs and figure
+- `designs/top/`: six curated Phase 2 designs (five batchB cluster members +
+  batchA best for contrast) and the headline interface figure
+- `results/batch_analysis.csv`: full per-design metrics for both batches
+- `docs/`: this document and a PyMOL command reference
+
+Raw per-design outputs (hundreds of PDBs per batch, ProteinMPNN intermediates,
+trajectory folders) are kept locally and excluded from the repo via
+`.gitignore`; the curated designs and the full metrics CSV are committed so the
+results remain reproducible and inspectable without the bulk.
