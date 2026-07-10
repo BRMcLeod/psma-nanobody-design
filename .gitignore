@@ -11,3 +11,4 @@ batchB.zip
 __pycache__/
 *.pyc
 .DS_Store
+docs/pymol-cheat-sheet.md
