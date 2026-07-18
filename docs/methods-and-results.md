@@ -14,6 +14,10 @@ prostate-specific membrane antigen (PSMA), using the RFantibody pipeline
   into a controlled test of CDR-H3 length, and produced a verified headline
   design.
 
+The pipeline was subsequently rebuilt to run locally on a Blackwell GPU and the
+Phase 2 campaign re-run to confirm the local build reproduces the cloud results;
+that validation is documented at the end.
+
 The target, epitope, and target-preparation steps below are shared across both
 phases. The pipeline is shared too; only the scale and the H3 sampling range
 differ between phases.
@@ -72,8 +76,9 @@ length from the `.trb` metadata, ranks designs by interaction_pae, and reports
 per-batch pass rates.
 
 Compute: run on a cloud RTX 4090 (Ada, sm_89) via RunPod. The local RTX 5060 Ti
-(Blackwell, sm_120) is not supported by RFantibody's CUDA 11.8 container, so
-cloud compute on an Ada GPU was used.
+(Blackwell, sm_120) is not supported by RFantibody's default CUDA 11.8 container,
+so cloud compute on an Ada GPU was used for the original campaign. A later local
+rebuild (below) removed this dependence.
 
 ---
 
@@ -237,6 +242,93 @@ must be mapped through structural alignment rather than trusting output residue
 numbers. This is baked into the Phase 2 analysis approach: hotspots are located
 by proximity and alignment, not by residue number.
 
+---
+
+# Local build reproduction (Blackwell / CUDA 12.8)
+
+## Motivation
+
+The original campaign ran on rented cloud GPUs because RFantibody's default
+container targets CUDA 11.8, which does not support the local card's Blackwell
+architecture (compute capability sm_120): designs failed with "CUDA error: no
+kernel image is available for execution on the device." The stack was rebuilt
+from source against CUDA 12.8 to run locally on an RTX 5060 Ti. The full build
+account (dependency handling, the DGL from-source compile, an ANARCI install
+requiring a numpy pin, the quiver-native pipeline adaptation) is kept in the
+separate rfantibody-blackwell project notes.
+
+The local build is quiver-native (structures and scores flow between stages in
+`.qv` archive files rather than loose PDB/TRB files), so the pipeline and
+analysis scripts were re-implemented accordingly:
+`scripts/run_batch_local.sh`, `scripts/analyze_batch_local.py`, and
+`scripts/cdr_annotate.py` (the last maps IMGT CDR ranges to real PDB residue
+numbers via ANARCI).
+
+## Validation approach
+
+A rebuilt stack on a different CUDA numerical path and a newer RFantibody version
+could in principle shift results, so the local build was not assumed equivalent.
+The Phase 2 batchB campaign was re-run locally with identical parameters (H3
+range 8-20, 96 designs, same target, same five hotspots, same 8 A filter, 2
+sequences per backbone, RF2 at 10 recycles) and compared against the stored cloud
+batchB. The comparison deliberately weights the stable high-N statistics (median
+iPAE, pass rate) over the noisy best-of-N value.
+
+## Validation results
+
+| Metric               | RunPod (cu118) | Local (CUDA 12.8, sm_120) |
+|----------------------|----------------|---------------------------|
+| Median iPAE          | 18.33          | 18.50                     |
+| Mean iPAE            | ~18            | 18.16                     |
+| 8 A filter pass rate | 64 / 96        | 54 / 96                   |
+| Best iPAE            | 5.27           | 4.78                      |
+
+The median interface-pAE is essentially identical (18.50 vs 18.33), so the local
+build reproduces the campaign's interface-quality distribution, which is the
+statistic that actually matters. The pass-rate difference (54 vs 64 of 96) sits
+within binomial sampling noise on the softer geometric filter and does not
+reflect a quality shift. The target-renumbering behaviour persisted identically
+on the local build and was handled the same way (structural mapping, not trusting
+output residue numbers), which is itself a point of consistency between the two
+builds.
+
+## Structural triage of the local run
+
+The same scrutiny applied to the original campaign was applied here, and it
+mattered. The top design by iPAE (samples_design_17, iPAE 4.78) was a
+framework-mediated dock, not a productive one: it carried a large target-aligned
+CDR RMSD (27.8 A), the numerical fingerprint of an interface RF2 is confident
+about but which is not CDR-mediated, and visual inspection confirmed the CDRs
+sit perpendicular to the epitope with the framework making the contact. A pure
+iPAE ranking would have mistaken it for the best design.
+
+Ranking instead on iPAE together with pose agreement (low target-aligned CDR
+RMSD) surfaced a genuine CDR-mediated candidate:
+
+| Design                 | iPAE | pLDDT | target-aln CDR RMSD (A) | min hotspot dist (A) | H3 len |
+|------------------------|------|-------|-------------------------|----------------------|--------|
+| samples_design_0_dld_0 | 8.81 | 0.91  | 6.42                    | 4.47                 | 21     |
+
+Visual inspection confirms this design's CDR-H3 (a long, 21-residue loop) engages
+the epitope at a natural angle of approach, contacting the hotspots through the
+CDRs rather than the framework. The interface figure is at
+`designs/top/local_validation_design0_interface.png`.
+
+This candidate is presented as evidence that the local build produces the same
+kind of output as the cloud build and stands up to the same structural scrutiny,
+not as a new scientific result. The Phase 2 finding (H3 length as a
+distributional effect; batchB_90 as the campaign headline) is unchanged.
+
+## Cost and practical outcome
+
+The original 96-design campaign cost roughly a few USD of rented cloud time. The
+equivalent local run costs a fraction of that in electricity, but the meaningful
+gain is not the money: it is the removal of per-run cost and cloud-provisioning
+friction, which allows unconstrained iteration and overnight runs. For very large
+campaigns, rented cloud GPUs remain faster and are the sensible tool; the local
+build is best for development, iteration, and modest batches. Knowing that split
+is part of the outcome.
+
 ## Honest assessment and limitations
 
 - This is an in silico campaign. Even the best design is a hypothesis, not a
@@ -245,11 +337,16 @@ by proximity and alignment, not by residue number.
   candidate; 192 designs producing one strong in silico hit is consistent with
   the method's known low per-design hit rate.
 - iPAE is the primary interface-confidence signal here, but a single in silico
-  metric is not validation. A high-confidence predicted interface can still be
-  wrong.
+  metric is not validation, and, as the local triage shows, it can rank a
+  framework dock above a productive one. Pose agreement and visual inspection are
+  necessary alongside it.
 - The headline design's ~4 A target-aligned CDR RMSD means RF2 repositions the
   CDR somewhat relative to the design; the interface is confident but not a
   perfect backbone match.
+- The local reproduction validates the build against a matched PSMA benchmark at
+  matched settings. It does not guarantee identical behaviour on an arbitrary new
+  target, and it spans two changes at once (CUDA stack and RFantibody version),
+  so it is a practical equivalence check, not a controlled single-variable one.
 - No wet-lab validation. No developability assessment (aggregation, exposed
   hydrophobics, unpaired cysteines, glycosylation motifs). No screening against
   the GCPIII homolog for cross-reactivity.
@@ -269,14 +366,15 @@ by proximity and alignment, not by residue number.
 
 ## Files
 
-- `targets/`: input structure (4NGM crop), hotspot PyMOL session
-- `scripts/run_batch.sh`: parameterized RFantibody funnel (RFdiffusion -> 8 A
-  filter -> ProteinMPNN -> RF2)
-- `scripts/analyze_batch.py`: RF2 score parsing, filtering, per-batch stats,
-  ranking by interaction_pae
+- `targets/`: input structure (4NGM crop), cleaned target, hotspot PyMOL session
+- `scripts/run_batch.sh` / `analyze_batch.py`: original RunPod funnel and analysis
+- `scripts/run_batch_local.sh` / `analyze_batch_local.py`: local quiver-native
+  funnel and analysis (ANARCI-based IMGT CDR-H3 counting)
+- `scripts/cdr_annotate.py`: maps IMGT CDR ranges to real PDB residue numbers,
+  emits a reference table and PyMOL selections
 - `designs/poc/`: the four Phase 1 proof-of-concept designs and figure
-- `designs/top/`: six curated Phase 2 designs (five batchB cluster members +
-  batchA best for contrast) and the headline interface figure
+- `designs/top/`: curated Phase 2 designs, the headline interface figure, and the
+  local-build validation figure
 - `results/batch_analysis.csv`: full per-design metrics for both batches
 - `docs/`: this document and a PyMOL command reference
 

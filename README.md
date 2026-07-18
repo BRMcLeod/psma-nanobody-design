@@ -22,10 +22,14 @@ epitope, in two phases:
   success, and produced a verified headline design whose CDR-H3 folds directly
   over all five chosen hotspot residues.
 
+The pipeline was later rebuilt to run locally on a Blackwell (RTX 5060 Ti,
+CUDA 12.8) GPU, and the campaign re-run on that build to confirm it reproduces
+the original cloud results. See [Local build reproduction](#local-build-reproduction).
+
 Target: PSMA (GCPII / FOLH1) extracellular domain, PDB 4NGM. Epitope: apical
 domain, the validated binding region of the clinical antibody J591. Format:
-single-domain VHH nanobody. Compute: cloud RTX 4090 via RunPod (the local
-Blackwell GPU is not supported by RFantibody's CUDA 11.8 container).
+single-domain VHH nanobody. Compute: cloud RTX 4090 via RunPod for the original
+campaign; local RTX 5060 Ti for the reproduction.
 
 ## Phase 1: proof-of-concept (4 designs)
 
@@ -89,12 +93,50 @@ H3 length 16.
 Visual inspection confirms the entire CDR-H3 loop folds directly over all five
 hotspot residues (Glu-Asp-Lys-Lys-Lys). This is genuine CDR-mediated engagement
 of the chosen epitope, not a framework-mediated dock or a near-miss: the metrics
-and the structure agree. The interface figure above shows this design.
+and the structure agree. The interface figure at the top of this page shows this
+design.
 
 One honest caveat: target-aligned CDR RMSD is ~4 A, meaning RF2 predicts a pose
 slightly shifted from the designed backbone, though it remains confident in the
 interface. This is a strong in silico result and a starting hypothesis for
 wet-lab work, not a validated binder.
+
+## Local build reproduction
+
+The RFantibody pipeline ships against CUDA 11.8, which does not support the
+Blackwell (sm_120) architecture. The stack was rebuilt from source against
+CUDA 12.8 to run locally on an RTX 5060 Ti, removing the dependence on rented
+cloud GPUs. Build details are in the separate rfantibody-blackwell notes.
+
+To confirm the local build produces equivalent science (a different CUDA
+numerical stack and a newer RFantibody version could in principle shift
+results), the Phase 2 batchB campaign was re-run locally with identical
+parameters and compared against the original cloud run:
+
+| Metric               | RunPod (cu118) | Local (CUDA 12.8, sm_120) |
+|----------------------|----------------|---------------------------|
+| Median iPAE          | 18.33          | 18.50                     |
+| 8 A filter pass rate | 64 / 96        | 54 / 96                   |
+| Best iPAE            | 5.27           | 4.78                      |
+
+The median interface-pAE, the stable high-N statistic, is essentially identical
+(18.50 vs 18.33), so the local build reproduces the campaign's interface-quality
+distribution. The pass-rate difference (54 vs 64) sits within binomial sampling
+noise on the softer geometric filter and does not reflect a quality shift. The
+known target-renumbering behaviour persisted identically on the local build,
+handled the same way (structural mapping, not trusting output residue numbers).
+
+![Local-build CDR-mediated candidate engaging the epitope](designs/top/local_validation_design0_interface.png)
+
+Applying the same structural triage as the original campaign: the top design by
+iPAE (4.78) was a framework-mediated dock, flagged by a large target-aligned CDR
+RMSD (27.8 A) and confirmed by inspection, confident interface, wrong paratope.
+Ranking instead on iPAE together with pose agreement surfaced a genuine
+CDR-mediated candidate, **samples_design_0_dldesign_0** (iPAE 8.81, CDR RMSD
+6.42 A, min dist 4.47 A, H3 length 21), whose CDR-H3 engages the epitope at a
+natural angle (shown above). This is presented as evidence the local build works
+and yields the same kind of output under the same scrutiny, not as a new headline
+result.
 
 ## Key result in context
 
@@ -106,17 +148,18 @@ developability triage, cross-reactivity screening against the GCPIII homolog,
 and ultimately wet-lab expression and binding assays. None of that is done here.
 
 Full methodology for both phases, the two-batch analysis, the target-renumbering
-QC finding, and an honest assessment are in
+QC finding, the local-build validation, and an honest assessment are in
 [docs/methods-and-results.md](docs/methods-and-results.md).
 
 ## Repository
 
-- `targets/` - input structure (4NGM crop) and epitope/hotspot PyMOL session
+- `targets/` - input structure (4NGM crop), cleaned target, epitope/hotspot session
 - `designs/poc/` - the four Phase 1 proof-of-concept designs and figure
-- `designs/top/` - the six curated Phase 2 designs (five batchB cluster + batchA
-  best for contrast) and the headline interface figure
-- `scripts/` - `run_batch.sh` (parameterized RFantibody funnel) and
-  `analyze_batch.py` (RF2 score parsing, filtering, ranking)
+- `designs/top/` - the six curated Phase 2 designs, the headline interface figure,
+  and the local-build validation figure
+- `scripts/` - the RunPod funnel (`run_batch.sh`, `analyze_batch.py`) and the
+  local quiver-native tooling (`run_batch_local.sh`, `analyze_batch_local.py`,
+  `cdr_annotate.py`)
 - `results/` - `batch_analysis.csv`, the full per-design metrics table
 - `docs/` - full methods and results, plus a PyMOL command reference
 
