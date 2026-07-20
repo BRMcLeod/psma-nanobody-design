@@ -106,7 +106,7 @@ wet-lab work, not a validated binder.
 The RFantibody pipeline ships against CUDA 11.8, which does not support the
 Blackwell (sm_120) architecture. The stack was rebuilt from source against
 CUDA 12.8 to run locally on an RTX 5060 Ti, removing the dependence on rented
-cloud GPUs. Build details are in the separate rfantibody-blackwell notes.
+cloud GPUs. Build details and validation are in [BRMcLeod/rfantibody-sm120](https://github.com/BRMcLeod/rfantibody-sm120).
 
 To confirm the local build produces equivalent science (a different CUDA
 numerical stack and a newer RFantibody version could in principle shift
@@ -161,7 +161,7 @@ QC finding, the local-build validation, and an honest assessment are in
   local quiver-native tooling (`run_batch_local.sh`, `analyze_batch_local.py`,
   `cdr_annotate.py`)
 - `results/` - `batch_analysis.csv`, the full per-design metrics table
-- `docs/` - full methods and results, plus a PyMOL command reference
+- `docs/` - full methods and results
 
 Raw design outputs (hundreds of PDBs per batch) are kept locally and excluded
 from the repo; the curated top designs and the full metrics CSV are included so
