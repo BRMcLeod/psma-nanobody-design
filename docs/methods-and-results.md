@@ -217,6 +217,8 @@ The ~4 A target-aligned CDR RMSD is the caveat: RF2 predicts a pose slightly
 shifted from the designed backbone while remaining confident in the interface.
 This is a strong in silico hypothesis, not a validated binder.
 
+One developability caveat sits alongside the interface result. Sequence-liability scanning (see "Sequence-liability triage" below) flags an NG motif in CDR2 of this design, at IMGT position 62. NG is the fastest-deamidating motif in antibodies and the one that dominates degradation in clinical-stage mAbs (Lu et al. 2018), and it sits in a CDR where modification is most likely to affect binding. It does not unseat batchB_90 as the best design by interface confidence, but in a real campaign this is exactly the liability to either engineer out (N->Q, or G->A at the +1 position) or carry forward with a stability assay attached. The strongest design by one axis is not automatically the cleanest by another, which is the tension a triage funnel exists to surface.       
+
 ---
 
 ## QC finding: target renumbering across outputs
@@ -351,6 +353,18 @@ is part of the outcome.
   hydrophobics, unpaired cysteines, glycosylation motifs). No screening against
   the GCPIII homolog for cross-reactivity.
 
+## Sequence-liability triage
+
+A per-design developability screen was added downstream of the interface funnel, implemented in `scripts/liability_scan.py`. The interface metrics (iPAE, pose agreement, hotspot contact) rank a design by whether it binds; they say nothing about whether the sequence is manufacturable and stable. Those are separate axes, and a design can score well on one while carrying real problems on the other.
+
+The screen splits each design's heavy chain into IMGT regions with ANARCI, then scans for known chemical-liability motifs: N-linked glycosylation sequons (NxS/NxT), asparagine deamidation (NG high-risk, NS/NT/NN/NH moderate), aspartate isomerization (D[GSDNTH]), Asp-Pro fragmentation, and methionine/tryptophan oxidation. Motifs are scored ordinally and weighted 5x in CDRs versus framework, on the basis that a CDR liability is both more solvent-exposed and more likely to affect binding (motif set and weighting after Lu et al. 2018, mAbs 11:45-57, and the LAP/Adimab IMGT liability conventions). The tool reports both a flagged inventory (every motif, its position, and region) and per-region plus total scores.
+
+Two design choices matter for interpretation. Oxidation-prone Met and Trp in the framework are flagged but scored zero: they are usually buried and often structurally essential (the conserved Trp41, for instance), so they are surfaced as reminders rather than penalties. And the canonical VHH disulfide cysteines (IMGT 23 and 104) are recognized as expected rather than counted as unpaired-cysteine liabilities.
+
+The screen also tracks the camelid FR2 hallmark residues (IMGT 42, 49, 50, 52; Vincke et al. 2009), which govern VHH solubility and contribute to antigen binding and CDR3 pre-organization. Across all ten curated designs these read FGLA and are identical, confirming that the h-NbBCII10 scaffold retains its camelid hallmark character (F42 and A52 in particular) and that sequence design did not drift these binding-relevant positions.
+
+Applied to the curated set, the screen makes the interface-versus-developability tension concrete: the two long-H3 Phase 1 designs (psma_nb_0, H3 length 22) carry the heaviest liability load, while the headline batchB_90 sits mid-pack, its main liability being the CDR2 NG motif noted above. This is the intended function of a triage layer: to rank on manufacturability independently of binding, so the two signals can be weighed against each other rather than conflated.
+
 ## What a real campaign would add
 
 - Scale further and filter hard on interface pAE and CDR-mediated contact, then
@@ -359,8 +373,7 @@ is part of the outcome.
   candidates for a second, independent confidence signal.
 - Rosetta interface scoring (dG_separated, shape complementarity) on the
   survivors.
-- Developability triage and cross-reactivity screening against GCPIII before any
-  synthesis.
+- Cross-reactivity screening against GCPIII homoloh before any synthesis.
 - Wet-lab expression and binding assays (e.g. SPR/BLI) as the only real
   validation.
 
@@ -372,11 +385,13 @@ is part of the outcome.
   funnel and analysis (ANARCI-based IMGT CDR-H3 counting)
 - `scripts/cdr_annotate.py`: maps IMGT CDR ranges to real PDB residue numbers,
   emits a reference table and PyMOL selections
+- `scripts/liability_scan.py`: sequence-liability triage (IMGT region split via ANARCI, motif scan, per-region and total scores, FR2 hallmark tracking)
 - `designs/poc/`: the four Phase 1 proof-of-concept designs and figure
 - `designs/top/`: curated Phase 2 designs, the headline interface figure, and the
   local-build validation figure
 - `results/batch_analysis.csv`: full per-design metrics for both batches
-- `docs/`: this document and a PyMOL command reference
+- `docs/`: this document 
+
 
 Raw per-design outputs (hundreds of PDBs per batch, ProteinMPNN intermediates,
 trajectory folders) are kept locally and excluded from the repo via
